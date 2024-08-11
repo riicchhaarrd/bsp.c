@@ -6,4 +6,5 @@ if(WIN32)
 else()
     # Linux and other UNIX-like systems
     target_link_libraries(bsp m)
+    target_link_options(bsp PRIVATE -static)
 endif()
