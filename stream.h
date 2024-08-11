@@ -60,4 +60,3 @@ static int stream_read_line(Stream *s, char *line, size_t max_line_length)
 	line[n] = 0;
 	return eof;
 }
-#endif
