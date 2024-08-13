@@ -190,15 +190,15 @@ void export_to_map(const char *path)
 				++side_offset;
 			}
 		}
-		DiskPlane planes[6];
-		planes_from_aabb(mins, maxs, planes);
+		DiskPlane brush_planes[6];
+		planes_from_aabb(mins, maxs, brush_planes);
 		for(size_t h = 0; h < 6; ++h)
 		{
 			vec3 n;
-			n[0] = -planes[h].normal[0];
-			n[1] = -planes[h].normal[1];
-			n[2] = -planes[h].normal[2];
-			write_plane(mapfile, materials[axialMaterialNum[h]].material, n, -planes[h].dist);
+			n[0] = -brush_planes[h].normal[0];
+			n[1] = -brush_planes[h].normal[1];
+			n[2] = -brush_planes[h].normal[2];
+			write_plane(mapfile, materials[axialMaterialNum[h]].material, n, -brush_planes[h].dist);
 		}
 		if(numsides > 0)
 		{
