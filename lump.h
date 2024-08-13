@@ -176,14 +176,17 @@ typedef struct
 
 typedef struct
 {
+	s32 checkStamp;
 	vec3 xyz;
-} CollisionVertex;
+} DiskCollisionVertex;
 
 typedef struct
 {
+	s32 checkStamp;
 	vec3 origin;
 	vec3 axis[3];
-} CollisionEdge;
+	u32 length;
+} DiskCollisionEdge;
 
 typedef struct
 {
@@ -192,16 +195,16 @@ typedef struct
 	s32 zSlope;
 	s32 start;
 	s32 length;
-} CollisionBorder;
+} DiskCollisionBorder;
 
 typedef struct
 {
+	u16 checkStamp;
 	u8 triCount;
 	u8 borderCount;
-	u8 pad0[2];
-	s32 tris;
-	s32 borders;
-} CollisionPartition;
+	u32 firstTriIndex;
+	u32 firstBorderIndex;
+} DiskCollisionPartition;
 
 typedef struct
 {
@@ -228,16 +231,16 @@ typedef struct
 	s16 materialIndex;
 	s16 childCount;
 	CollisionAabbTreeIndex u;
-} CollisionAabbTree;
+} DiskCollisionAabbTree;
 
 typedef struct
 {
 	vec4 plane;
 	vec4 svec;
 	vec4 tvec;
-	s32 verts[3];
-	s32 edges[3];
-} CollisionTriangle;
+	u32 vertIndices[3];
+	u32 edgeIndices[3];
+} DiskCollisionTriangle;
 
 /*
 The leafs lump stores the leaves of the map's BSP tree.
@@ -332,12 +335,12 @@ static const size_t lumpsizes[] = {
 	[LUMP_LEAFS] = sizeof(dleaf_t),
 	[LUMP_LEAFBRUSHES] = sizeof(dleafbrush_t),
 	[LUMP_LEAFSURFACES] = sizeof(dleafface_t),
-	[LUMP_COLLISIONVERTS] = sizeof(CollisionVertex),
-	[LUMP_COLLISIONEDGES] = sizeof(CollisionEdge),
-	[LUMP_COLLISIONTRIS] = sizeof(CollisionTriangle),
-	[LUMP_COLLISIONBORDERS] = sizeof(CollisionBorder),
-	[LUMP_COLLISIONPARTITIONS] = sizeof(CollisionPartition),
-	[LUMP_COLLISIONAABBS] = sizeof(CollisionAabbTree),
+	[LUMP_COLLISIONVERTS] = sizeof(DiskCollisionVertex),
+	[LUMP_COLLISIONEDGES] = sizeof(DiskCollisionEdge),
+	[LUMP_COLLISIONTRIS] = sizeof(DiskCollisionTriangle),
+	[LUMP_COLLISIONBORDERS] = sizeof(DiskCollisionBorder),
+	[LUMP_COLLISIONPARTITIONS] = sizeof(DiskCollisionPartition),
+	[LUMP_COLLISIONAABBS] = sizeof(DiskCollisionAabbTree),
 	[LUMP_MODELS] = sizeof(dmodel_t),
 	[LUMP_VISIBILITY] = 1,
 	[LUMP_ENTITIES] = 1,
