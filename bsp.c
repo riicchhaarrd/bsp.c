@@ -274,6 +274,31 @@ typedef struct
 	const char *export_file;
 } ProgramOptions;
 
+static void print_usage()
+{
+	printf(R"(
+Usage: ./bsp [options] <input_file>
+
+Options:
+  -info                 Print information about the input file.
+  -export            	Export the input file to a .MAP.
+                        If no export path is provided, it will write to the input file with _exported appended.
+                        Example: /path/to/your/bsp.d3dbsp will write to /path/to/your/bsp_exported.map
+
+  -export_path <path> 	Specify the path where the export should be saved. Requires an argument.
+  -help              	Display this help message and exit.
+
+Arguments:
+  <input_file>       	The input file to be processed.
+
+Examples:
+  ./bsp -info input_file.d3dbsp
+  ./bsp -export -export_path /path/to/exported_file.map input_file.d3dbsp
+	
+)");
+	exit(0);
+}
+
 static bool parse_arguments(int argc, char **argv, ProgramOptions *opts)
 {
     for (int i = 1; i < argc; i++)
@@ -284,6 +309,9 @@ static bool parse_arguments(int argc, char **argv, ProgramOptions *opts)
 				if (!strcmp(argv[i], "-info"))
 				{
 					opts->print_info = true;
+				} else if(!strcmp(argv[i], "-help") || !strcmp(argv[i], "-?") || !strcmp(argv[i], "-usage"))
+				{
+					print_usage();
 				} else if (!strcmp(argv[i], "-export"))
 				{
 					opts->export_to_map = true;
