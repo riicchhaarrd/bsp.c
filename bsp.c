@@ -8,37 +8,42 @@
 #include <math.h>
 #include "type.h"
 #include "lump.h"
+#include "entity_parser.h"
+#include <growable-buf/buf.h>
 
 #include "stream_file.h"
+#include "stream_buffer.h"
 
 #include <linmath.h/linmath.h>
 
 // #define STB_IMAGE_WRITE_IMPLEMENTATION
 // #include "stb_image_write.h"
 
-typedef struct
-{
-	void *data;
-	size_t count;
-} LumpData;
-
-static LumpData lumpdata[LUMP_MAX];
+LumpData lumpdata[LUMP_MAX];
 
 s64 filelen;
 
-void info(dheader_t *hdr, int type)
+Entity *entities;
+
+void info(dheader_t *hdr, int type, int *count)
 {
 	lump_t *l = &hdr->lumps[type];
 	char amount[256] = { 0 };
-	if(lumpsizes[type] == 0)
-		snprintf(amount, sizeof(amount), "     ?");
-	else if(lumpsizes[type] == 1)
+	if(count)
 	{
-		snprintf(amount, sizeof(amount), "      ");
-	}
-	else if(lumpsizes[type] > 1)
+		snprintf(amount, sizeof(amount), "%6d", *count);
+	} else
 	{
-		snprintf(amount, sizeof(amount), "%6d", l->filelen / lumpsizes[type]);
+		if(lumpsizes[type] == 0)
+			snprintf(amount, sizeof(amount), "     ?");
+		else if(lumpsizes[type] == 1)
+		{
+			snprintf(amount, sizeof(amount), "      ");
+		}
+		else if(lumpsizes[type] > 1)
+		{
+			snprintf(amount, sizeof(amount), "%6d", l->filelen / lumpsizes[type]);
+		}
 	}
 	printf("%s %-19s %6d B\t%2d KB %5.1f%%\n",
 		amount,
@@ -140,7 +145,13 @@ void export_to_map(const char *path)
 		return;
 	}
 	printf("Exporting to '%s'\n", path);
-	fprintf(mapfile, "iwmap 4\n// entity 0\n{\n\"classname\" \"worldspawn\"\n");
+	Entity *worldspawn = &entities[0];
+	fprintf(mapfile, "iwmap 4\n// entity 0\n{\n");
+	for(size_t i = 0; i < buf_size(worldspawn->keyvalues); ++i)
+	{
+		KeyValuePair *kvp = &worldspawn->keyvalues[i];
+		fprintf(mapfile, "\"%s\" \"%s\"\n", kvp->key, kvp->value);
+	}
 	size_t side_offset = 0;
 	LumpData *brushes = &lumpdata[LUMP_BRUSHES];
 	LumpData *lbrushsides = &lumpdata[LUMP_BRUSHSIDES];
@@ -206,9 +217,29 @@ void export_to_map(const char *path)
 		}
 		fprintf(mapfile, "}\n");
 	}
-
 	fprintf(mapfile, "}\n");
+	for(size_t i = 1; i < buf_size(entities); ++i)
+	{
+		Entity *e = &entities[i];
+		fprintf(mapfile, "// entity %d\n{\n", i);
+		for(size_t j = 0; j < buf_size(e->keyvalues); ++j)
+		{
+			KeyValuePair *kvp = &e->keyvalues[j];
+			fprintf(mapfile, "\"%s\" \"%s\"\n", kvp->key, kvp->value);
+		}
+		fprintf(mapfile, "}\n");
+	}
 	fclose(mapfile);
+}
+
+const char *entity_key_by_value(Entity *ent, const char *key)
+{
+	for(size_t i = 0; i < buf_size(ent->keyvalues); ++i)
+	{
+		if(!strcmp(ent->keyvalues[i].key, key))
+			return ent->keyvalues[i].value;
+	}
+	return "";
 }
 
 void print_info(dheader_t *hdr, const char *path)
@@ -217,51 +248,59 @@ void print_info(dheader_t *hdr, const char *path)
 	printf("---------------------\n");
 	printf("%s: %d\n", path, filelen);
 	
-	info(hdr, LUMP_MODELS);
-	info(hdr, LUMP_MATERIALS);
-	info(hdr, LUMP_BRUSHES);
-	info(hdr, LUMP_BRUSHSIDES);
-	info(hdr, LUMP_PLANES);
-	info(hdr, LUMP_ENTITIES);
+	info(hdr, LUMP_MODELS, NULL);
+	info(hdr, LUMP_MATERIALS, NULL);
+	info(hdr, LUMP_BRUSHES, NULL);
+	info(hdr, LUMP_BRUSHSIDES, NULL);
+	info(hdr, LUMP_PLANES, NULL);
+	int entity_count = buf_size(entities);
+	info(hdr, LUMP_ENTITIES, &entity_count);
 	printf("\n");
-	info(hdr, LUMP_NODES);
-	info(hdr, LUMP_LEAFS);
-	info(hdr, LUMP_LEAFBRUSHES);
-	info(hdr, LUMP_LEAFSURFACES);
-	info(hdr, LUMP_COLLISIONVERTS);
-	info(hdr, LUMP_COLLISIONEDGES);
-	info(hdr, LUMP_COLLISIONTRIS);
-	info(hdr, LUMP_COLLISIONBORDERS);
-	info(hdr, LUMP_COLLISIONAABBS);
-	info(hdr, LUMP_DRAWVERTS);
-	info(hdr, LUMP_DRAWINDICES);
-	info(hdr, LUMP_TRIANGLES);
+	info(hdr, LUMP_NODES, NULL);
+	info(hdr, LUMP_LEAFS, NULL);
+	info(hdr, LUMP_LEAFBRUSHES, NULL);
+	info(hdr, LUMP_LEAFSURFACES, NULL);
+	info(hdr, LUMP_COLLISIONVERTS, NULL);
+	info(hdr, LUMP_COLLISIONEDGES, NULL);
+	info(hdr, LUMP_COLLISIONTRIS, NULL);
+	info(hdr, LUMP_COLLISIONBORDERS, NULL);
+	info(hdr, LUMP_COLLISIONAABBS, NULL);
+	info(hdr, LUMP_DRAWVERTS, NULL);
+	info(hdr, LUMP_DRAWINDICES, NULL);
+	info(hdr, LUMP_TRIANGLES, NULL);
 	
-	info(hdr, LUMP_OBSOLETE_1);
-	info(hdr, LUMP_OBSOLETE_2);
-	info(hdr, LUMP_OBSOLETE_3);
-	info(hdr, LUMP_OBSOLETE_4);
-	info(hdr, LUMP_OBSOLETE_5);
+	info(hdr, LUMP_OBSOLETE_1, NULL);
+	info(hdr, LUMP_OBSOLETE_2, NULL);
+	info(hdr, LUMP_OBSOLETE_3, NULL);
+	info(hdr, LUMP_OBSOLETE_4, NULL);
+	info(hdr, LUMP_OBSOLETE_5, NULL);
 
-	info(hdr, LUMP_LIGHTBYTES);
-	info(hdr, LUMP_LIGHTGRIDENTRIES);
-	info(hdr, LUMP_LIGHTGRIDCOLORS);
+	info(hdr, LUMP_LIGHTBYTES, NULL);
+	info(hdr, LUMP_LIGHTGRIDENTRIES, NULL);
+	info(hdr, LUMP_LIGHTGRIDCOLORS, NULL);
 	// Not sure if it's stored as a lump or just parsed from entdata with classname "light"
-	// TODO: parse entdata
-	printf("     0 lights                   0 B      0 KB   0.0%\n");
-	info(hdr, LUMP_VISIBILITY);
-	info(hdr, LUMP_PORTALVERTS);
-	info(hdr, LUMP_OCCLUDERS);
-	info(hdr, LUMP_OCCLUDERPLANES);
-	info(hdr, LUMP_OCCLUDEREDGES);
-	info(hdr, LUMP_OCCLUDERINDICES);
-	info(hdr, LUMP_AABBTREES);
-	info(hdr, LUMP_CELLS);
-	info(hdr, LUMP_PORTALS);
-	info(hdr, LUMP_CULLGROUPS);
-	info(hdr, LUMP_CULLGROUPINDICES);
+	size_t light_entity_count = 0;
+	for(size_t i = 0; i < buf_size(entities); ++i)
+	{
+		Entity *e = &entities[i];
+		const char *classname = entity_key_by_value(e, "classname");
+		if(!strcmp(classname, "light"))
+			++light_entity_count;
+	}
+	printf("     %d lights                   0 B      0 KB   0.0%\n", light_entity_count);
+	info(hdr, LUMP_VISIBILITY, NULL);
+	info(hdr, LUMP_PORTALVERTS, NULL);
+	info(hdr, LUMP_OCCLUDERS, NULL);
+	info(hdr, LUMP_OCCLUDERPLANES, NULL);
+	info(hdr, LUMP_OCCLUDEREDGES, NULL);
+	info(hdr, LUMP_OCCLUDERINDICES, NULL);
+	info(hdr, LUMP_AABBTREES, NULL);
+	info(hdr, LUMP_CELLS, NULL);
+	info(hdr, LUMP_PORTALS, NULL);
+	info(hdr, LUMP_CULLGROUPS, NULL);
+	info(hdr, LUMP_CULLGROUPINDICES, NULL);
 	printf("\n");
-	info(hdr, LUMP_PATHCONNECTIONS);
+	info(hdr, LUMP_PATHCONNECTIONS, NULL);
 	printf("---------------------\n");
 }
 
@@ -427,6 +466,10 @@ int main(int argc, char **argv)
 			s.read(&s, ld->data, lumpsizes[i], ld->count);
 		}
 	}
+	
+	Entity *parse_entities();
+	entities = parse_entities();
+
 	if(opts.print_info)
 		print_info(&hdr, opts.input_file);
 

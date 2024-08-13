@@ -343,3 +343,9 @@ static const size_t lumpsizes[] = {
 	[LUMP_ENTITIES] = 1,
 	[LUMP_PATHCONNECTIONS] = 0
 };
+
+typedef struct
+{
+	void *data;
+	size_t count;
+} LumpData;
