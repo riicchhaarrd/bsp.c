@@ -221,6 +221,9 @@ void export_to_map(const char *path)
 	for(size_t i = 1; i < buf_size(entities); ++i)
 	{
 		Entity *e = &entities[i];
+		const char *classname = entity_key_by_value(e, "classname");
+		if(!strcmp(classname, "script_brushmodel") || strstr(classname, "trigger_")) // TODO: FIXME
+			continue;
 		fprintf(mapfile, "// entity %d\n{\n", i);
 		for(size_t j = 0; j < buf_size(e->keyvalues); ++j)
 		{
