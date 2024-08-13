@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
-project(bsp_project)
+project(bsp)
 add_executable(bsp bsp.c)
+target_include_directories(bsp PRIVATE third_party)
 if(WIN32)
     # Windows specific options (libm is not needed)
 else()
