@@ -135,6 +135,156 @@ static void write_plane(FILE *fp, const char *material, vec3 n, float dist)
 			material ? material : "caulk");
 }
 
+const char *entity_key_by_value(Entity *ent, const char *key)
+{
+	for(size_t i = 0; i < buf_size(ent->keyvalues); ++i)
+	{
+		if(!strcmp(ent->keyvalues[i].key, key))
+			return ent->keyvalues[i].value;
+	}
+	return "";
+}
+
+typedef struct
+{
+	s32 vertex[3];
+} Triangle;
+
+typedef struct
+{
+	Triangle *triangles;
+	s32 materialIndex;
+} Patch;
+
+static int triangle_vertex_compare(const void *a, const void *b)
+{
+	return (*(int *)a - *(int *)b);
+}
+
+// vertices should be sorted
+bool patch_has_triangle(Patch *patch, int *vertices)
+{
+	for(size_t i = 0; i < buf_size(patch->triangles); ++i)
+	{
+		Triangle *tri = &patch->triangles[i];
+		if(tri->vertex[0] == vertices[0] && tri->vertex[1] == vertices[1] && tri->vertex[2] == vertices[2])
+			return true;
+	}
+	return false;
+}
+
+bool patches_has_triangle(Patch *patches, int *vertices)
+{
+	for(size_t i = 0; i < buf_size(patches); ++i)
+	{
+		if(patch_has_triangle(&patches[i], vertices))
+			return true;
+	}
+	return false;
+}
+
+static bool vec3_fuzzy_zero(float *v)
+{
+	float e = 0.0001f;
+	return fabs(v[0]) < e && fabs(v[1]) < e && fabs(v[2]) < e;
+}
+
+static void write_patches(FILE *fp, int total)
+{
+	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
+	DiskCollisionVertex *vertices = lumpdata[LUMP_COLLISIONVERTS].data;
+	DiskCollisionTriangle *tris = lumpdata[LUMP_COLLISIONTRIS].data;
+	DiskCollisionAabbTree *collaabbtrees = lumpdata[LUMP_COLLISIONAABBS].data;
+	DiskCollisionPartition *collpartitions = lumpdata[LUMP_COLLISIONPARTITIONS].data;
+
+	Patch *patches = NULL;
+	Patch *patch = NULL;
+
+	for(size_t i = 0; i < lumpdata[LUMP_COLLISIONAABBS].count; ++i)
+	{
+		DiskCollisionAabbTree *tree = &collaabbtrees[i];
+		DiskCollisionPartition *part = &collpartitions[tree->u.partitionIndex];
+		if(tree->childCount > 0)
+			continue;
+		bool created_new_patch = false;
+		if(part->triCount > 0)
+		{
+			for(size_t j = 0; j < part->triCount; ++j)
+			{
+				DiskCollisionTriangle *tri = &tris[part->firstTriIndex + j];
+
+				Triangle triangle;
+				triangle.vertex[0] = tri->vertIndices[0];
+				triangle.vertex[1] = tri->vertIndices[1];
+				triangle.vertex[2] = tri->vertIndices[2];
+
+				if(vec3_fuzzy_zero(vertices[triangle.vertex[0]].xyz)
+				   || vec3_fuzzy_zero(vertices[triangle.vertex[1]].xyz)
+				   || vec3_fuzzy_zero(vertices[triangle.vertex[2]].xyz))
+				{
+					continue;
+				}
+
+				if(patch && buf_size(patch->triangles) >= 7)
+				{
+					buf_push(patches, ((Patch) { .triangles = NULL, .materialIndex = tree->materialIndex }));
+					patch = &patches[buf_size(patches) - 1];
+					created_new_patch = true;
+				}
+				qsort(triangle.vertex, 3, sizeof(int), triangle_vertex_compare);
+
+				if(!patches_has_triangle(patches, triangle.vertex))
+				{
+					if(!created_new_patch)
+					{
+						buf_push(patches, ((Patch) { .triangles = NULL, .materialIndex = tree->materialIndex }));
+						patch = &patches[buf_size(patches) - 1];
+						created_new_patch = true;
+					}
+					buf_push(patch->triangles, triangle);
+				}
+			}
+		}
+	}
+	
+	// TODO: better way of converting triangles into patches
+
+	for(size_t i = 0; i < buf_size(patches); ++i)
+	{
+		Patch *patch = &patches[i];
+		if(buf_size(patch->triangles) == 0)
+			continue;
+
+		fprintf(fp, "// brush %d\n", i + total);
+		fprintf(fp, "  {\n");
+		fprintf(fp, "   mesh\n");
+		fprintf(fp, "   {\n");
+		fprintf(fp, "   %s\n", materials[patch->materialIndex].material);
+		// TODO: write contentFlags and contentFlags info
+		fprintf(fp, "   lightmap_gray\n");
+		fprintf(fp, "   %d 2 16 8\n", buf_size(patch->triangles) * 2);
+
+		for(size_t j = 0; j < buf_size(patch->triangles); ++j)
+		{
+			Triangle *tri = &patch->triangles[j];
+			DiskCollisionVertex *v1 = &vertices[tri->vertex[0]];
+			DiskCollisionVertex *v2 = &vertices[tri->vertex[1]];
+			DiskCollisionVertex *v3 = &vertices[tri->vertex[2]];
+			fprintf(fp, "   (\n");
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v1->xyz[0], v1->xyz[1], v1->xyz[2]);
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v2->xyz[0], v2->xyz[1], v2->xyz[2]);
+			fprintf(fp, "   )\n");
+			fprintf(fp, "   (\n");
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v3->xyz[0], v3->xyz[1], v3->xyz[2]);
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v1->xyz[0], v1->xyz[1], v1->xyz[2]);
+			fprintf(fp,"   )\n");
+		}
+		fprintf(fp, "   }\n");
+		fprintf(fp, "  }\n");
+
+	}
+}
+
 void export_to_map(const char *path)
 {
 	FILE *mapfile = NULL;
@@ -217,6 +367,7 @@ void export_to_map(const char *path)
 		}
 		fprintf(mapfile, "}\n");
 	}
+	write_patches(mapfile, brushes->count);
 	fprintf(mapfile, "}\n");
 	for(size_t i = 1; i < buf_size(entities); ++i)
 	{
