@@ -1,3 +1,6 @@
 [submodule "third_party/linmath.h"]
 	path = third_party/linmath.h
 	url = https://github.com/datenwolf/linmath.h
+[submodule "third_party/growable-buf"]
+	path = third_party/growable-buf
+	url = https://github.com/skeeto/growable-buf
