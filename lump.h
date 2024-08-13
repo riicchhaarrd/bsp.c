@@ -298,6 +298,19 @@ typedef struct
 
 typedef struct
 {
+	vec3 xyz;
+} DiskGfxPortalVertex;
+
+typedef struct
+{
+	u32 planeIndex;
+	u32 cellIndex;
+	u32 firstPortalVertex;
+	u32 portalVertexCount;
+} DiskGfxPortal;
+
+typedef struct
+{
 	s32 firstSurface;
 	s32 surfaceCount;
 	s32 childCount;
@@ -323,14 +336,14 @@ static const size_t lumpsizes[] = {
 	[LUMP_OBSOLETE_3] = 0,
 	[LUMP_OBSOLETE_4] = 0,
 	[LUMP_OBSOLETE_5] = 0,
-	[LUMP_PORTALVERTS] = 0,
+	[LUMP_PORTALVERTS] = sizeof(DiskGfxPortalVertex),
 	[LUMP_OCCLUDERS] = 0,
 	[LUMP_OCCLUDERPLANES] = 0,
 	[LUMP_OCCLUDEREDGES] = 0,
 	[LUMP_OCCLUDERINDICES] = 0,
 	[LUMP_AABBTREES] = sizeof(DiskGfxAabbTree),
 	[LUMP_CELLS] = sizeof(DiskGfxCell),
-	[LUMP_PORTALS] = 0,
+	[LUMP_PORTALS] = sizeof(DiskGfxPortal),
 	[LUMP_NODES] = sizeof(dnode_t),
 	[LUMP_LEAFS] = sizeof(dleaf_t),
 	[LUMP_LEAFBRUSHES] = sizeof(dleafbrush_t),
