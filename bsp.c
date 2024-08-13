@@ -276,26 +276,24 @@ typedef struct
 
 static void print_usage()
 {
-	printf(R"(
-Usage: ./bsp [options] <input_file>
-
-Options:
-  -info                 Print information about the input file.
-  -export            	Export the input file to a .MAP.
-                        If no export path is provided, it will write to the input file with _exported appended.
-                        Example: /path/to/your/bsp.d3dbsp will write to /path/to/your/bsp_exported.map
-
-  -export_path <path> 	Specify the path where the export should be saved. Requires an argument.
-  -help              	Display this help message and exit.
-
-Arguments:
-  <input_file>       	The input file to be processed.
-
-Examples:
-  ./bsp -info input_file.d3dbsp
-  ./bsp -export -export_path /path/to/exported_file.map input_file.d3dbsp
-	
-)");
+	printf("Usage: ./bsp [options] <input_file>\n");
+	printf("\n");
+	printf("Options:\n");
+	printf("  -info                 Print information about the input file.\n");
+	printf("  -export            	Export the input file to a .MAP.\n");
+	printf("                        If no export path is provided, it will write to the input file with _exported appended.\n");
+	printf("                        Example: /path/to/your/bsp.d3dbsp will write to /path/to/your/bsp_exported.map\n");
+	printf("\n");
+	printf("\n");
+	printf("  -export_path <path> 	Specify the path where the export should be saved. Requires an argument.\n");
+	printf("  -help              	Display this help message and exit.\n");
+	printf("\n");
+	printf("Arguments:\n");
+	printf("  <input_file>       	The input file to be processed.\n");
+	printf("\n");
+	printf("Examples:\n");
+	printf("./bsp -info input_file.d3dbsp\n");
+	printf("./bsp -export -export_path /path/to/exported_file.map input_file.d3dbsp\n");
 	exit(0);
 }
 
