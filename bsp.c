@@ -386,16 +386,6 @@ void export_to_map(const char *path)
 	fclose(mapfile);
 }
 
-const char *entity_key_by_value(Entity *ent, const char *key)
-{
-	for(size_t i = 0; i < buf_size(ent->keyvalues); ++i)
-	{
-		if(!strcmp(ent->keyvalues[i].key, key))
-			return ent->keyvalues[i].value;
-	}
-	return "";
-}
-
 void print_info(dheader_t *hdr, const char *path)
 {
 	printf("bsp.c v0.1 (c) 2024\n");
