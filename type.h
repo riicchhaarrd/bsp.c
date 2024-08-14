@@ -19,3 +19,5 @@ typedef int64_t s64;
 typedef float vec2[2];
 typedef float vec3[3];
 typedef float vec4[4];
+typedef vec4 mat4[4];
+typedef vec3 mat3[3];
