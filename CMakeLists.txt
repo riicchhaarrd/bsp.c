@@ -5,8 +5,20 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Debug)
 add_executable(bsp bsp.c entity_parser.c)
 target_include_directories(bsp PRIVATE third_party)
+
+if (MINGW32)
+# cmake -DMINGW32=1 ..
+set(CMAKE_SYSTEM_NAME Windows)
+SET(CMAKE_C_COMPILER i686-w64-mingw32-gcc)
+SET(CMAKE_CXX_COMPILER i686-w64-mingw32-g++)
+SET(CMAKE_RC_COMPILER i686-w64-mingw32-windres)
+set(CMAKE_RANLIB i686-w64-mingw32-ranlib)
+endif()
+
 if(WIN32)
     # Windows specific options (libm is not needed)
+elseif (MINGW32)
+    target_link_libraries(bsp -static-libgcc -static-libstdc++)
 else()
     # Linux and other UNIX-like systems
     target_link_libraries(bsp m)
