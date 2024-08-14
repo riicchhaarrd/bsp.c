@@ -107,7 +107,7 @@ void planes_from_aabb(vec3 mins, vec3 maxs, DiskPlane planes[6])
 	planes[5].dist = maxs[2];
 }
 
-static void write_plane(FILE *fp, const char *material, vec3 n, float dist)
+static void write_plane(FILE *fp, const char *material, vec3 n, float dist, vec3 origin)
 {
 	vec3 tangent, bitangent;
 	vec3 up = { 0, 0, 1.f };
@@ -134,15 +134,15 @@ static void write_plane(FILE *fp, const char *material, vec3 n, float dist)
 	fprintf(fp,
 			" ( %f %f %f ) ( %f %f %f ) ( %f %f %f ) %s 128 128 0 0 0 0 lightmap_gray 16384 16384 0 "
 			"0 0 0\n",
-			c[0],
-			c[1],
-			c[2],
-			b[0],
-			b[1],
-			b[2],
-			a[0],
-			a[1],
-			a[2],
+			c[0] + origin[0],
+			c[1] + origin[1],
+			c[2] + origin[2],
+			b[0] + origin[0],
+			b[1] + origin[1],
+			b[2] + origin[2],
+			a[0] + origin[0],
+			a[1] + origin[1],
+			a[2] + origin[2],
 			material ? material : "caulk");
 }
 
@@ -359,10 +359,10 @@ static void write_portals(FILE *fp)
 		triangle_normal(portal_normal, vertices[portal->firstPortalVertex].xyz, vertices[portal->firstPortalVertex + 1].xyz, vertices[portal->firstPortalVertex + 2].xyz);
 		float portal_distance = vec3_mul_inner(portal_normal, vertices[portal->firstPortalVertex].xyz);
 
-		write_plane(fp, "portal", portal_normal, portal_distance);
+		write_plane(fp, "portal", portal_normal, portal_distance, (vec3) { 0.f, 0.f, 0.f });
 		for(int k = 0; k < 3; ++k)
 			portal_normal[k] = -portal_normal[k];
-		write_plane(fp, "portal_nodraw", portal_normal, -portal_distance + 8.f);
+		write_plane(fp, "portal_nodraw", portal_normal, -portal_distance + 8.f, (vec3) { 0.f, 0.f, 0.f });
 		for(size_t i = 0; i < portal->portalVertexCount; ++i)
 		{
 			DiskGfxPortalVertex *a = &vertices[portal->firstPortalVertex + i];
@@ -378,7 +378,7 @@ static void write_portals(FILE *fp)
 			float d = vec3_mul_inner(n, a->xyz);
 			for(int k = 0; k < 3; ++k)
 				n[k] = -n[k];
-			write_plane(fp, "portal_nodraw", n, -d);
+			write_plane(fp, "portal_nodraw", n, -d, (vec3) { 0.f, 0.f, 0.f });
 		}
 		fprintf(fp, "}\n");
 	}
@@ -393,6 +393,291 @@ static bool ignore_material(const char *material)
 			return true;
 	}
 	return false;
+}
+
+typedef struct
+{
+	vec3 normal;
+	float distance;
+	char material[256];
+} MapPlane;
+
+typedef struct
+{
+	vec3 mins, maxs;
+	MapPlane *planes;
+} MapBrush;
+
+typedef struct
+{
+	vec3 *points;
+	uint32_t *indices;
+	vec2 *uvs;
+	MapPlane *plane;
+} Polygon;
+
+MapBrush *mapbrushes = NULL;
+
+void map_planes_from_aabb(vec3 mins, vec3 maxs, MapPlane planes[6])
+{
+	planes[0].normal[0] = -1.0f;
+	planes[0].normal[1] = 0.0f;
+	planes[0].normal[2] = 0.0f;
+	planes[0].distance = -mins[0];
+
+	planes[1].normal[0] = 1.0f;
+	planes[1].normal[1] = 0.0f;
+	planes[1].normal[2] = 0.0f;
+	planes[1].distance = maxs[0];
+
+	planes[2].normal[0] = 0.0f;
+	planes[2].normal[1] = -1.0f;
+	planes[2].normal[2] = 0.0f;
+	planes[2].distance = -mins[1];
+
+	planes[3].normal[0] = 0.0f;
+	planes[3].normal[1] = 1.0f;
+	planes[3].normal[2] = 0.0f;
+	planes[3].distance = maxs[1];
+
+	planes[4].normal[0] = 0.0f;
+	planes[4].normal[1] = 0.0f;
+	planes[4].normal[2] = -1.0f;
+	planes[4].distance = -mins[2];
+
+	planes[5].normal[0] = 0.0f;
+	planes[5].normal[1] = 0.0f;
+	planes[5].normal[2] = 1.0f;
+	planes[5].distance = maxs[2];
+}
+
+static void load_map_brushes()
+{
+	size_t side_offset = 0;
+	LumpData *brushes = &lumpdata[LUMP_BRUSHES];
+	cbrushside_t *brushsides = (cbrushside_t*)lumpdata[LUMP_BRUSHSIDES].data;
+	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
+	DiskPlane *diskplanes = (DiskPlane*)lumpdata[LUMP_PLANES].data;
+	
+	for(size_t i = 0; i < brushes->count; ++i)
+	{
+		MapBrush dst = { 0 };
+
+		DiskBrush *src = &((DiskBrush*)brushes->data)[i];
+		cbrushside_t *sides = &brushsides[side_offset];
+		size_t numsides = src->numSides - 6;
+		s32 axialMaterialNum[6] = {0};
+		for(size_t axis = 0; axis < 3; axis++)
+		{
+			for(size_t sign = 0; sign < 2; sign++)
+			{
+				union f2i
+				{
+					float f;
+					int i;
+				} u;
+				u.i = brushsides[side_offset].plane;
+				axialMaterialNum[sign + axis * 2] = brushsides[side_offset].materialNum;
+				float f = u.f;
+				if(sign)
+				{
+					dst.maxs[axis] = f;
+				}
+				else
+				{
+					dst.mins[axis] = f;
+				}
+				++side_offset;
+			}
+		}
+
+		MapPlane axial_planes[6];
+		map_planes_from_aabb(dst.mins, dst.maxs, axial_planes);
+		for(size_t h = 0; h < 6; ++h)
+		{
+			MapPlane *plane = &axial_planes[h];
+			snprintf(plane->material, sizeof(plane->material), "%s", materials[axialMaterialNum[h]].material);
+			buf_push(dst.planes, *plane);
+			}
+			for(size_t k = 0; k < numsides; ++k)
+			{
+				cbrushside_t *side = &brushsides[side_offset + k];
+			DiskPlane *diskplane = &diskplanes[side->plane];
+
+			MapPlane plane = {0};
+			plane.distance = diskplane->dist;
+			snprintf(plane.material, sizeof(plane.material), "%s", materials[side->materialNum].material);
+			vec3_dup(plane.normal, diskplane->normal);
+			buf_push(dst.planes, plane);
+		}
+		buf_push(mapbrushes, dst);
+		side_offset += numsides;
+	}
+}
+
+static float mat3_determinant(mat3 m)
+{
+	return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+		   + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+}
+
+static bool mat3_inverse(mat3 result, mat3 m)
+{
+	float a, b, c, d, e, f, g, h, i;
+	a = m[0][0];
+	b = m[0][1];
+	c = m[0][2];
+	d = m[1][0];
+	e = m[1][1];
+	f = m[1][2];
+	g = m[2][0];
+	h = m[2][1];
+	i = m[2][2];
+
+	float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+
+	if(det == 0.0)
+		return false;
+
+	float inv_det = 1.f / det;
+
+	result[0][0] = (e * i - f * h) * inv_det;
+	result[0][1] = (c * h - b * i) * inv_det;
+	result[0][2] = (b * f - c * e) * inv_det;
+
+	result[1][0] = (f * g - d * i) * inv_det;
+	result[1][1] = (a * i - c * g) * inv_det;
+	result[1][2] = (c * d - a * f) * inv_det;
+
+	result[2][0] = (d * h - e * g) * inv_det;
+	result[2][1] = (b * g - a * h) * inv_det;
+	result[2][2] = (a * e - b * d) * inv_det;
+	return true;
+}
+
+static void mat3_vec3_mul(vec3 result, mat3 m, vec3 v)
+{
+	result[0] = result[1] = result[2] = 0.f;
+	for(size_t i = 0; i < 3; ++i)
+	{
+		for(size_t j = 0; j < 3; ++j)
+		{
+			result[i] = result[i] + m[i][j] * v[j];
+		}
+	}
+}
+
+bool polygon_has_pt(Polygon *polygon, vec3 pt)
+{
+	for(size_t i = 0; i < buf_size(polygon->points); ++i)
+	{
+		vec3 v;
+		vec3_sub(v, pt, polygon->points[i]);
+		if(vec3_len(v) < 0.001)
+			return true;
+	}
+	return false;
+		}
+
+#define buf_set_size(v, new_size)                                                                               \
+	do                                                                                                          \
+	{                                                                                                           \
+		if(v)                                                                                                   \
+		{                                                                                                       \
+			buf_ptr((v))->size = (size_t)new_size > buf_ptr((v))->capacity ? buf_ptr((v))->capacity : new_size; \
+		}                                                                                                       \
+	} while(0)
+
+bool polygonize_brush(MapBrush *brush, Polygon **polygons_out)
+{
+	Polygon *polygons = NULL;
+	size_t plane_count = buf_size(brush->planes);
+	for(size_t i = 0; i < plane_count; ++i)
+	{
+		MapPlane *p0 = &brush->planes[i];
+		Polygon polygon = { 0 };
+		polygon.plane = p0;
+		for(size_t j = 0; j < plane_count; ++j)
+		{
+			if(j == i)
+				continue;
+			for(size_t k = 0; k < plane_count; ++k)
+			{
+				MapPlane *p1 = &brush->planes[j];
+				MapPlane *p2 = &brush->planes[k];
+
+				if(j == k || i == k)
+					continue;
+				mat3 P = {
+					{ p0->normal[0], p0->normal[1], p0->normal[2] },
+					{ p1->normal[0], p1->normal[1], p1->normal[2] },
+					{ p2->normal[0], p2->normal[1], p2->normal[2] }
+				};
+				float det = mat3_determinant(P);
+				if(det == 0.0f)
+					continue;
+				vec3 b = { p0->distance, p1->distance, p2->distance };
+				// P * v = -b
+				// v = -inverse(P) * b
+				mat3 inv_P;
+				mat3_inverse(inv_P, P);
+				vec3 v;
+				mat3_vec3_mul(v, inv_P, b);
+				bool invalid = false;
+
+				for(size_t m = 0; m < plane_count; ++m)
+				{
+					float d = vec3_mul_inner(brush->planes[m].normal, v) - brush->planes[m].distance;
+					if(d > 0.008f)
+					{
+						invalid = true;
+						break;
+					}
+				}
+				if(!invalid && !polygon_has_pt(&polygon, v))
+				{
+					buf_grow(polygon.points, 1);
+					buf_set_size(polygon.points, buf_size(polygon.points) + 1);
+					memcpy(polygon.points[buf_size(polygon.points) - 1], v, sizeof(vec3));
+				}
+			}
+		}
+
+		if(buf_size(polygon.points) >= 3)
+		{
+			buf_push(polygons, polygon);
+		}
+		else
+		{
+			buf_free(polygon.indices);
+			buf_free(polygon.points);
+		}
+	}
+	*polygons_out = polygons;
+	return true;
+}
+
+static void write_brushes(FILE *fp, dmodel_t *model, vec3 origin)
+{
+	for(size_t i = 0; i < model->numBrushes; ++i)
+			{
+		fprintf(fp, "{\n");
+		MapBrush *brush = &mapbrushes[model->firstBrush + i];
+		// for(size_t j = 0; j < buf_size(brush->planes); ++j)
+		// {
+		// 	MapPlane *plane = &brush->planes[j];
+		// 	write_plane(fp, plane->material, plane->normal, plane->distance);
+		// }
+		Polygon *polys = NULL;
+		polygonize_brush(brush, &polys);
+		for(size_t j = 0; j < buf_size(polys); ++j)
+		{
+			Polygon *poly = &polys[j];
+			MapPlane *plane = poly->plane;
+			write_plane(fp, plane->material, plane->normal, plane->distance, origin);
+			}
+		fprintf(fp, "}\n");	
+	}
 }
 
 void export_to_map(ProgramOptions *opts, const char *path)
@@ -413,103 +698,10 @@ void export_to_map(ProgramOptions *opts, const char *path)
 		KeyValuePair *kvp = &worldspawn->keyvalues[i];
 		fprintf(mapfile, "\"%s\" \"%s\"\n", kvp->key, kvp->value);
 	}
-	size_t side_offset = 0;
-	LumpData *brushes = &lumpdata[LUMP_BRUSHES];
-	LumpData *lbrushsides = &lumpdata[LUMP_BRUSHSIDES];
-	cbrushside_t *brushsides = (cbrushside_t*)lbrushsides->data;
+	dmodel_t *models = lumpdata[LUMP_MODELS].data;
 
-	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
-	DiskPlane *planes = (DiskPlane*)lumpdata[LUMP_PLANES].data;
-	
-	for(size_t i = 0; i < brushes->count; ++i)
-	{
-		DiskBrush *src = &((DiskBrush*)brushes->data)[i];
-		size_t numsides = src->numSides - 6;
-		vec3 mins, maxs;
-		u32 axialMaterialNum[6];
-		for(size_t axis = 0; axis < 3; axis++)
-		{
-			for(size_t sign = 0; sign < 2; sign++)
-			{
-				union f2i
-				{
-					float f;
-					int i;
-				} u;
-				u.i = brushsides[side_offset].plane;
-				axialMaterialNum[sign + axis * 2] = brushsides[side_offset].materialNum;
-				float f = u.f;
-				if(sign)
-				{
-					maxs[axis] = f;
-				}
-				else
-				{
-					mins[axis] = f;
-				}
-				++side_offset;
-			}
-		}
+	write_brushes(mapfile, &models[0], (vec3) { 0.f, 0.f, 0.f });
 
-		bool ignored = false; // ignore_material(materials[src->materialNum].material);
-
-		for(size_t h = 0; h < 6; ++h)
-		{
-			if(ignore_material(materials[axialMaterialNum[h]].material))
-			{
-				ignored = true;
-				break;
-			}
-		}
-		if(numsides > 0)
-		{
-			for(size_t k = 0; k < numsides; ++k)
-			{
-				cbrushside_t *side = &brushsides[side_offset + k];
-				if(ignore_material(materials[side->materialNum].material))
-				{
-					ignored = true;
-					break;
-				}
-			}
-		}
-
-		if(!opts->try_fix_portals)
-		{
-			ignored = false;
-		}
-
-		if(!ignored)
-		{
-			fprintf(mapfile, "{\n");
-		}
-
-		DiskPlane brush_planes[6];
-		planes_from_aabb(mins, maxs, brush_planes);
-		for(size_t h = 0; h < 6; ++h)
-		{
-			if(!ignored)
-				write_plane(mapfile, materials[axialMaterialNum[h]].material, brush_planes[h].normal, brush_planes[h].dist);
-		}
-		if(numsides > 0)
-		{
-			for(size_t k = 0; k < numsides; ++k)
-			{
-				cbrushside_t *side = &brushsides[side_offset + k];
-				DiskPlane *plane = &planes[side->plane];
-				if(!ignored)
-					write_plane(mapfile, materials[side->materialNum].material, plane->normal, plane->dist);
-			}
-
-			side_offset += numsides;
-		}
-		if(!ignored)
-		fprintf(mapfile, "}\n");
-	}
-	if(opts->try_fix_portals)
-	{
-		write_portals(mapfile);
-	}
 	if(!opts->exclude_patches)
 	{
 		write_patches(mapfile);
@@ -519,13 +711,31 @@ void export_to_map(ProgramOptions *opts, const char *path)
 	{
 		Entity *e = &entities[i];
 		const char *classname = entity_key_by_value(e, "classname");
-		if(!strcmp(classname, "script_brushmodel") || strstr(classname, "trigger_")) // TODO: FIXME
-			continue;
 		fprintf(mapfile, "// entity %d\n{\n", i);
+
+		bool has_brushes = !strcmp(classname, "script_brushmodel") || strstr(classname, "trigger_");
 		for(size_t j = 0; j < buf_size(e->keyvalues); ++j)
 		{
 			KeyValuePair *kvp = &e->keyvalues[j];
+			if(has_brushes)
+			{
+				if(!strcmp(kvp->key, "origin") || !strcmp(kvp->key, "model"))
+					continue;
+			}
 			fprintf(mapfile, "\"%s\" \"%s\"\n", kvp->key, kvp->value);
+		}
+		if(has_brushes)
+		{
+			const char *modelstr = entity_key_by_value(e, "model");
+			vec3 origin = {0};
+			const char *originstr = entity_key_by_value(e, "origin");
+			if(originstr)
+			{
+				sscanf(originstr, "%f %f %f", &origin[0], &origin[1], &origin[2]);
+			}
+			int modelidx = 0;
+			sscanf(modelstr, "*%d", &modelidx);
+			write_brushes(mapfile, &models[modelidx], origin);
 		}
 		fprintf(mapfile, "}\n");
 	}
@@ -760,6 +970,8 @@ int main(int argc, char **argv)
 	
 	Entity *parse_entities();
 	entities = parse_entities();
+	
+	load_map_brushes();
 
 	if(opts.print_info)
 		print_info(&hdr, opts.input_file);
