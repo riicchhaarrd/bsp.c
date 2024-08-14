@@ -19,6 +19,16 @@
 // #define STB_IMAGE_WRITE_IMPLEMENTATION
 // #include "stb_image_write.h"
 
+typedef struct
+{
+	bool print_info;
+	bool export_to_map;
+	const char *input_file;
+	const char *format;
+	const char *export_file;
+	bool try_fix_portals;
+} ProgramOptions;
+
 LumpData lumpdata[LUMP_MAX];
 
 s64 filelen;
@@ -123,15 +133,15 @@ static void write_plane(FILE *fp, const char *material, vec3 n, float dist)
 	fprintf(fp,
 			" ( %f %f %f ) ( %f %f %f ) ( %f %f %f ) %s 128 128 0 0 0 0 lightmap_gray 16384 16384 0 "
 			"0 0 0\n",
-			a[0],
-			a[1],
-			a[2],
-			b[0],
-			b[1],
-			b[2],
 			c[0],
 			c[1],
 			c[2],
+			b[0],
+			b[1],
+			b[2],
+			a[0],
+			a[1],
+			a[2],
 			material ? material : "caulk");
 }
 
@@ -189,7 +199,7 @@ static bool vec3_fuzzy_zero(float *v)
 	return fabs(v[0]) < e && fabs(v[1]) < e && fabs(v[2]) < e;
 }
 
-static void write_patches(FILE *fp, int total)
+static void write_patches(FILE *fp, int* total)
 {
 	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
 	DiskCollisionVertex *vertices = lumpdata[LUMP_COLLISIONVERTS].data;
@@ -255,7 +265,8 @@ static void write_patches(FILE *fp, int total)
 		if(buf_size(patch->triangles) == 0)
 			continue;
 
-		fprintf(fp, "// brush %d\n", i + total);
+		fprintf(fp, "// brush %d\n", i + *total);
+		*total++;
 		fprintf(fp, "  {\n");
 		fprintf(fp, "   mesh\n");
 		fprintf(fp, "   {\n");
@@ -285,7 +296,108 @@ static void write_patches(FILE *fp, int total)
 	}
 }
 
-void export_to_map(const char *path)
+void triangle_normal(vec3 n, const vec3 a, const vec3 b, const vec3 c)
+{
+    vec3 e1, e2;
+    vec3_sub(e1, b, a);
+    vec3_sub(e2, c, a);
+    vec3_mul_cross(n, e1, e2);
+    vec3_norm(n, n);
+}
+
+static bool vec3_fuzzy_eq(float *a, float *b)
+{
+	for(size_t k = 0; k < 3; ++k)
+	{
+		if(fabs(a[k] - b[k]) > 0.0001)
+			return false;
+	}
+	return true;
+}
+
+static void write_portals(FILE *fp, int *total)
+{
+	DiskGfxPortal *portals = lumpdata[LUMP_PORTALS].data;
+	DiskGfxPortalVertex *vertices = lumpdata[LUMP_PORTALVERTS].data;
+	DiskPlane *planes = (DiskPlane*)lumpdata[LUMP_PLANES].data;
+	
+	int *written = malloc(lumpdata[LUMP_PORTALS].count * sizeof(int));
+	memset(written, -1, lumpdata[LUMP_PORTALS].count * sizeof(int));
+	size_t written_count = 0;
+
+	for(size_t i = 0; i < lumpdata[LUMP_PORTALS].count; ++i)
+	{
+		DiskGfxPortal *portal = &portals[i];
+		bool found = false;
+		for(size_t k = 0; k < written_count; ++k)
+		{
+			DiskGfxPortal *other = &portals[written[k]];
+			if(other->portalVertexCount != portal->portalVertexCount)
+				continue;
+			size_t match_count = 0;
+			for(size_t g = 0; g < other->portalVertexCount; ++g)
+			{
+				for(size_t h = 0; h < portal->portalVertexCount; ++h)
+				{
+					if(vec3_fuzzy_eq(vertices[portal->firstPortalVertex + h].xyz, vertices[other->firstPortalVertex + g].xyz))
+						++match_count;
+				}
+			}
+			if(match_count == portal->portalVertexCount)
+			{
+				found = true;
+				break;
+			}
+		}
+		if(found)
+			continue;
+		written[written_count++] = i;
+
+		DiskPlane *plane = &planes[portal->planeIndex];
+
+		vec3 portal_normal;
+		triangle_normal(portal_normal, vertices[portal->firstPortalVertex].xyz, vertices[portal->firstPortalVertex + 1].xyz, vertices[portal->firstPortalVertex + 2].xyz);
+		float portal_distance = vec3_mul_inner(portal_normal, vertices[portal->firstPortalVertex].xyz);
+
+		fprintf(fp, "// brush %d\n{\n", i + *total);
+		*total++;
+		write_plane(fp, "portal", portal_normal, portal_distance);
+		for(int k = 0; k < 3; ++k)
+			portal_normal[k] = -portal_normal[k];
+		write_plane(fp, "portal_nodraw", portal_normal, -portal_distance + 8.f);
+		for(size_t i = 0; i < portal->portalVertexCount; ++i)
+		{
+			DiskGfxPortalVertex *a = &vertices[portal->firstPortalVertex + i];
+			int next_idx = i + 1 >= portal->portalVertexCount ? 0 : i + 1;
+			DiskGfxPortalVertex *b = &vertices[portal->firstPortalVertex + next_idx];
+
+			vec3 ba;
+			vec3_sub(ba, b->xyz, a->xyz);
+			vec3_norm(ba, ba);
+			vec3 n;
+			vec3_mul_cross(n, ba, plane->normal);
+
+			float d = vec3_mul_inner(n, a->xyz);
+			for(int k = 0; k < 3; ++k)
+				n[k] = -n[k];
+			write_plane(fp, "portal_nodraw", n, -d);
+		}
+		fprintf(fp, "}\n");
+	}
+}
+
+static bool ignore_material(const char *material)
+{
+	static const char *ignored[] = { "portal", "portal_nodraw", NULL };
+	for(size_t i = 0; ignored[i]; ++i)
+	{
+		if(!strcmp(material, ignored[i]))
+			return true;
+	}
+	return false;
+}
+
+void export_to_map(ProgramOptions *opts, const char *path)
 {
 	FILE *mapfile = NULL;
 	mapfile = fopen(path, "w");
@@ -296,7 +408,8 @@ void export_to_map(const char *path)
 	}
 	printf("Exporting to '%s'\n", path);
 	Entity *worldspawn = &entities[0];
-	fprintf(mapfile, "iwmap 4\n// entity 0\n{\n");
+	// fprintf(mapfile, "iwmap 4\n");
+	fprintf(mapfile, "// entity 0\n{\n");
 	for(size_t i = 0; i < buf_size(worldspawn->keyvalues); ++i)
 	{
 		KeyValuePair *kvp = &worldspawn->keyvalues[i];
@@ -310,9 +423,9 @@ void export_to_map(const char *path)
 	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
 	DiskPlane *planes = (DiskPlane*)lumpdata[LUMP_PLANES].data;
 	
+	int total = 0;
 	for(size_t i = 0; i < brushes->count; ++i)
 	{
-		fprintf(mapfile, "// brush %d\n{\n", i);
 		DiskBrush *src = &((DiskBrush*)brushes->data)[i];
 		size_t numsides = src->numSides - 6;
 		vec3 mins, maxs;
@@ -340,15 +453,45 @@ void export_to_map(const char *path)
 				++side_offset;
 			}
 		}
+
+		bool ignored = ignore_material(materials[src->materialNum].material);
+
+		for(size_t h = 0; h < 6; ++h)
+		{
+			if(ignore_material(materials[axialMaterialNum[h]].material))
+			{
+				ignored = true;
+				break;
+			}
+		}
+		if(numsides > 0)
+		{
+			for(size_t k = 0; k < numsides; ++k)
+			{
+				cbrushside_t *side = &brushsides[side_offset + k];
+				if(ignore_material(materials[side->materialNum].material))
+				{
+					ignored = true;
+					break;
+				}
+			}
+		}
+
+		if(!opts->try_fix_portals)
+		{
+			ignored = false;
+		}
+
+		if(!ignored)
+		{
+			fprintf(mapfile, "// brush %d\n{\n", total++);
+		}
 		DiskPlane brush_planes[6];
 		planes_from_aabb(mins, maxs, brush_planes);
 		for(size_t h = 0; h < 6; ++h)
 		{
-			vec3 n;
-			n[0] = -brush_planes[h].normal[0];
-			n[1] = -brush_planes[h].normal[1];
-			n[2] = -brush_planes[h].normal[2];
-			write_plane(mapfile, materials[axialMaterialNum[h]].material, n, -brush_planes[h].dist);
+			if(!ignored)
+				write_plane(mapfile, materials[axialMaterialNum[h]].material, brush_planes[h].normal, brush_planes[h].dist);
 		}
 		if(numsides > 0)
 		{
@@ -356,18 +499,20 @@ void export_to_map(const char *path)
 			{
 				cbrushside_t *side = &brushsides[side_offset + k];
 				DiskPlane *plane = &planes[side->plane];
-				vec3 n;
-				n[0] = -plane->normal[0];
-				n[1] = -plane->normal[1];
-				n[2] = -plane->normal[2];
-				write_plane(mapfile, materials[side->materialNum].material, n, -plane->dist);
+				if(!ignored)
+					write_plane(mapfile, materials[side->materialNum].material, plane->normal, plane->dist);
 			}
 
 			side_offset += numsides;
 		}
+		if(!ignored)
 		fprintf(mapfile, "}\n");
 	}
-	write_patches(mapfile, brushes->count);
+	if(opts->try_fix_portals)
+	{
+		write_portals(mapfile, &total);
+	}
+	write_patches(mapfile, &total);
 	fprintf(mapfile, "}\n");
 	for(size_t i = 1; i < buf_size(entities); ++i)
 	{
@@ -448,24 +593,16 @@ void print_info(dheader_t *hdr, const char *path)
 	printf("---------------------\n");
 }
 
-typedef struct
-{
-	bool print_info;
-	bool export_to_map;
-	const char *input_file;
-	const char *format;
-	const char *export_file;
-} ProgramOptions;
-
 static void print_usage()
 {
 	printf("Usage: ./bsp [options] <input_file>\n");
 	printf("\n");
 	printf("Options:\n");
-	printf("  -info                 Print information about the input file.\n");
-	printf("  -export            	Export the input file to a .MAP.\n");
-	printf("                        If no export path is provided, it will write to the input file with _exported appended.\n");
-	printf("                        Example: /path/to/your/bsp.d3dbsp will write to /path/to/your/bsp_exported.map\n");
+	printf("  -info                 	Print information about the input file.\n");
+	printf("  -export            		Export the input file to a .MAP.\n");
+	printf("                        	If no export path is provided, it will write to the input file with _exported appended.\n");
+	printf("                        	Example: /path/to/your/bsp.d3dbsp will write to /path/to/your/bsp_exported.map\n");
+	printf("  -original_brush_portals 	By default portals are converted to brushes instead of using the portals that are in brushes.\n");
 	printf("\n");
 	printf("\n");
 	printf("  -export_path <path> 	Specify the path where the export should be saved. Requires an argument.\n");
@@ -482,6 +619,8 @@ static void print_usage()
 
 static bool parse_arguments(int argc, char **argv, ProgramOptions *opts)
 {
+	opts->try_fix_portals = true;
+
     for (int i = 1; i < argc; i++)
 	{
 		switch(argv[i][0])
@@ -493,6 +632,9 @@ static bool parse_arguments(int argc, char **argv, ProgramOptions *opts)
 				} else if(!strcmp(argv[i], "-help") || !strcmp(argv[i], "-?") || !strcmp(argv[i], "-usage"))
 				{
 					print_usage();
+				} else if (!strcmp(argv[i], "-original_brush_portals"))
+				{
+					opts->try_fix_portals = false;
 				} else if (!strcmp(argv[i], "-export"))
 				{
 					opts->export_to_map = true;
@@ -635,9 +777,9 @@ int main(int argc, char **argv)
 		char output_file[256] = {0};
 		snprintf(output_file, sizeof(output_file), "%s%c%s_exported.map", directory, sep, basename);
 		if(opts.export_file)
-			export_to_map(opts.export_file);
+			export_to_map(&opts, opts.export_file);
 		else
-			export_to_map(output_file);
+			export_to_map(&opts, output_file);
 	}
 	return 0;
 }
