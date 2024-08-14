@@ -27,6 +27,7 @@ typedef struct
 	const char *format;
 	const char *export_file;
 	bool try_fix_portals;
+	bool exclude_patches;
 } ProgramOptions;
 
 LumpData lumpdata[LUMP_MAX];
@@ -199,7 +200,7 @@ static bool vec3_fuzzy_zero(float *v)
 	return fabs(v[0]) < e && fabs(v[1]) < e && fabs(v[2]) < e;
 }
 
-static void write_patches(FILE *fp, int* total)
+static void write_patches(FILE *fp)
 {
 	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
 	DiskCollisionVertex *vertices = lumpdata[LUMP_COLLISIONVERTS].data;
@@ -265,8 +266,6 @@ static void write_patches(FILE *fp, int* total)
 		if(buf_size(patch->triangles) == 0)
 			continue;
 
-		fprintf(fp, "// brush %d\n", i + *total);
-		*total++;
 		fprintf(fp, "  {\n");
 		fprintf(fp, "   mesh\n");
 		fprintf(fp, "   {\n");
@@ -315,7 +314,7 @@ static bool vec3_fuzzy_eq(float *a, float *b)
 	return true;
 }
 
-static void write_portals(FILE *fp, int *total)
+static void write_portals(FILE *fp)
 {
 	DiskGfxPortal *portals = lumpdata[LUMP_PORTALS].data;
 	DiskGfxPortalVertex *vertices = lumpdata[LUMP_PORTALVERTS].data;
@@ -351,6 +350,7 @@ static void write_portals(FILE *fp, int *total)
 		}
 		if(found)
 			continue;
+		fprintf(fp, "{\n");
 		written[written_count++] = i;
 
 		DiskPlane *plane = &planes[portal->planeIndex];
@@ -359,8 +359,6 @@ static void write_portals(FILE *fp, int *total)
 		triangle_normal(portal_normal, vertices[portal->firstPortalVertex].xyz, vertices[portal->firstPortalVertex + 1].xyz, vertices[portal->firstPortalVertex + 2].xyz);
 		float portal_distance = vec3_mul_inner(portal_normal, vertices[portal->firstPortalVertex].xyz);
 
-		fprintf(fp, "// brush %d\n{\n", i + *total);
-		*total++;
 		write_plane(fp, "portal", portal_normal, portal_distance);
 		for(int k = 0; k < 3; ++k)
 			portal_normal[k] = -portal_normal[k];
@@ -408,7 +406,7 @@ void export_to_map(ProgramOptions *opts, const char *path)
 	}
 	printf("Exporting to '%s'\n", path);
 	Entity *worldspawn = &entities[0];
-	// fprintf(mapfile, "iwmap 4\n");
+	fprintf(mapfile, "iwmap 4\n");
 	fprintf(mapfile, "// entity 0\n{\n");
 	for(size_t i = 0; i < buf_size(worldspawn->keyvalues); ++i)
 	{
@@ -423,7 +421,6 @@ void export_to_map(ProgramOptions *opts, const char *path)
 	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
 	DiskPlane *planes = (DiskPlane*)lumpdata[LUMP_PLANES].data;
 	
-	int total = 0;
 	for(size_t i = 0; i < brushes->count; ++i)
 	{
 		DiskBrush *src = &((DiskBrush*)brushes->data)[i];
@@ -454,7 +451,7 @@ void export_to_map(ProgramOptions *opts, const char *path)
 			}
 		}
 
-		bool ignored = ignore_material(materials[src->materialNum].material);
+		bool ignored = false; // ignore_material(materials[src->materialNum].material);
 
 		for(size_t h = 0; h < 6; ++h)
 		{
@@ -484,8 +481,9 @@ void export_to_map(ProgramOptions *opts, const char *path)
 
 		if(!ignored)
 		{
-			fprintf(mapfile, "// brush %d\n{\n", total++);
+			fprintf(mapfile, "{\n");
 		}
+
 		DiskPlane brush_planes[6];
 		planes_from_aabb(mins, maxs, brush_planes);
 		for(size_t h = 0; h < 6; ++h)
@@ -510,9 +508,12 @@ void export_to_map(ProgramOptions *opts, const char *path)
 	}
 	if(opts->try_fix_portals)
 	{
-		write_portals(mapfile, &total);
+		write_portals(mapfile);
 	}
-	write_patches(mapfile, &total);
+	if(!opts->exclude_patches)
+	{
+		write_patches(mapfile);
+	}
 	fprintf(mapfile, "}\n");
 	for(size_t i = 1; i < buf_size(entities); ++i)
 	{
@@ -603,6 +604,7 @@ static void print_usage()
 	printf("                        	If no export path is provided, it will write to the input file with _exported appended.\n");
 	printf("                        	Example: /path/to/your/bsp.d3dbsp will write to /path/to/your/bsp_exported.map\n");
 	printf("  -original_brush_portals 	By default portals are converted to brushes instead of using the portals that are in brushes.\n");
+	printf("  -exclude_patches 			Don't export patches.\n");
 	printf("\n");
 	printf("\n");
 	printf("  -export_path <path> 	Specify the path where the export should be saved. Requires an argument.\n");
@@ -632,6 +634,9 @@ static bool parse_arguments(int argc, char **argv, ProgramOptions *opts)
 				} else if(!strcmp(argv[i], "-help") || !strcmp(argv[i], "-?") || !strcmp(argv[i], "-usage"))
 				{
 					print_usage();
+				} else if (!strcmp(argv[i], "-exclude_patches"))
+				{
+					opts->exclude_patches = true;
 				} else if (!strcmp(argv[i], "-original_brush_portals"))
 				{
 					opts->try_fix_portals = false;
