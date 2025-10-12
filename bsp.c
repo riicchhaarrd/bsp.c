@@ -321,6 +321,11 @@ static void write_portals(FILE *fp)
 	DiskPlane *planes = (DiskPlane*)lumpdata[LUMP_PLANES].data;
 	
 	int *written = malloc(lumpdata[LUMP_PORTALS].count * sizeof(int));
+	if(!written)
+	{
+		fprintf(stderr, "Error: Failed to allocate memory for portal tracking\n");
+		return;
+	}
 	memset(written, -1, lumpdata[LUMP_PORTALS].count * sizeof(int));
 	size_t written_count = 0;
 
@@ -382,6 +387,7 @@ static void write_portals(FILE *fp)
 		}
 		fprintf(fp, "}\n");
 	}
+	free(written);
 }
 
 static bool ignore_material(const char *material)
@@ -932,6 +938,13 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	if(!opts.input_file)
+	{
+		fprintf(stderr, "Error: No input file specified.\n");
+		print_usage();
+		return 1;
+	}
+
 	TEST(dmodel_t, 48);
 
 	Stream s = {0};
@@ -963,6 +976,11 @@ int main(int argc, char **argv)
 			assert(l->filelen % lumpsizes[i] == 0);
 			ld->count = l->filelen / lumpsizes[i];
 			ld->data = calloc(ld->count, lumpsizes[i]);
+			if(!ld->data)
+			{
+				fprintf(stderr, "Error: Failed to allocate memory for lump %zu\n", i);
+				exit(1);
+			}
 			s.seek(&s, l->fileofs, SEEK_SET);
 			s.read(&s, ld->data, lumpsizes[i], ld->count);
 		}
@@ -990,9 +1008,18 @@ int main(int argc, char **argv)
 				 extension,
 				 sizeof(extension),
 				 &sep);
-				 
+
 		char output_file[256] = {0};
-		snprintf(output_file, sizeof(output_file), "%s%c%s_exported.map", directory, sep, basename);
+		// If no directory path was found, don't include directory and separator
+		if(sep == 0 || directory[0] == 0)
+		{
+			snprintf(output_file, sizeof(output_file), "%s_exported.map", basename);
+		}
+		else
+		{
+			snprintf(output_file, sizeof(output_file), "%s%c%s_exported.map", directory, sep, basename);
+		}
+
 		if(opts.export_file)
 			export_to_map(&opts, opts.export_file);
 		else

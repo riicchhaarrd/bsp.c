@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
     tags:
       - 'v*'
+      - 'test-*'
   pull_request:
     branches: [ "main" ]
 
@@ -52,11 +53,14 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/test-')
     permissions:
       contents: write
 
     steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
     - name: Download Windows artifact
       uses: actions/download-artifact@v4
       with:
@@ -69,14 +73,61 @@ jobs:
         name: bsp-linux
         path: ./artifacts/linux
 
+    - name: Get version from tag
+      id: get_version
+      run: |
+        TAG_NAME=${GITHUB_REF#refs/tags/}
+        # Handle test- tags
+        if [[ "$TAG_NAME" == test-* ]]; then
+          VERSION=${TAG_NAME}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "PRERELEASE=true" >> $GITHUB_OUTPUT
+          echo "DRAFT=true" >> $GITHUB_OUTPUT
+        # Handle v* tags
+        else
+          VERSION=${TAG_NAME#v}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          # All releases start as draft - manually publish after testing
+          echo "DRAFT=true" >> $GITHUB_OUTPUT
+          # Check if this is a pre-release (contains rc, alpha, beta, etc.)
+          if [[ "$VERSION" =~ (rc|alpha|beta|dev) ]]; then
+            echo "PRERELEASE=true" >> $GITHUB_OUTPUT
+          else
+            echo "PRERELEASE=false" >> $GITHUB_OUTPUT
+          fi
+        fi
+
+    - name: Package Windows release
+      run: |
+        mkdir -p release/windows
+        cp artifacts/windows/bsp.exe release/windows/
+        cp README.md release/windows/
+        cd release/windows
+        zip -r ../../bsp-${{ steps.get_version.outputs.VERSION }}-windows-x64.zip .
+        cd ../..
+        sha256sum bsp-${{ steps.get_version.outputs.VERSION }}-windows-x64.zip > bsp-${{ steps.get_version.outputs.VERSION }}-windows-x64.zip.sha256
+
+    - name: Package Linux release
+      run: |
+        mkdir -p release/linux
+        cp artifacts/linux/bsp release/linux/
+        chmod +x release/linux/bsp
+        cp README.md release/linux/
+        cd release/linux
+        tar czf ../../bsp-${{ steps.get_version.outputs.VERSION }}-linux-x64.tar.gz .
+        cd ../..
+        sha256sum bsp-${{ steps.get_version.outputs.VERSION }}-linux-x64.tar.gz > bsp-${{ steps.get_version.outputs.VERSION }}-linux-x64.tar.gz.sha256
+
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          ./artifacts/windows/bsp.exe
-          ./artifacts/linux/bsp
-        draft: false
-        prerelease: false
+          bsp-${{ steps.get_version.outputs.VERSION }}-windows-x64.zip
+          bsp-${{ steps.get_version.outputs.VERSION }}-windows-x64.zip.sha256
+          bsp-${{ steps.get_version.outputs.VERSION }}-linux-x64.tar.gz
+          bsp-${{ steps.get_version.outputs.VERSION }}-linux-x64.tar.gz.sha256
+        draft: ${{ steps.get_version.outputs.DRAFT }}
+        prerelease: ${{ steps.get_version.outputs.PRERELEASE }}
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
