@@ -102,3 +102,8 @@ This project uses the following third-party libraries (included as submodules):
 
 - [linmath.h](https://github.com/datenwolf/linmath.h) - Lightweight 3D math library
 - [growable-buf](https://github.com/skeeto/growable-buf) - Dynamic array implementation
+
+
+## TODO
+Compare collision triangles by generating brush geometry against compiled render geometry and try to match UV for accuracy from shift, scale, rotation. (Maybe use hash grid to optimize look ups)
+Check patches measure accuracy against bezier curve patches and see if we can get accuracy high enough to be a match and convert it to control points based curve patch. (Maybe use a neural net)
