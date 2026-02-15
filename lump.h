@@ -9,6 +9,7 @@ typedef struct lump_s
 } lump_t;
 #pragma pack(pop)
 
+// V4 (CoD2) lump indices - used as canonical indices throughout the code
 enum LumpType
 {
   LUMP_MATERIALS = 0,
@@ -365,3 +366,35 @@ typedef struct
 	void *data;
 	size_t count;
 } LumpData;
+
+// V59 (CoD1/UO) vertex: 44 bytes (different layout from V4's 68-byte DiskGfxVertex)
+// Layout: position(12) + texCoord(8) + lmapCoord(8) + normal(12) + color(4)
+#pragma pack(push, 1)
+typedef struct
+{
+	vec3 xyz;
+	vec2 texCoord;
+	vec2 lmapCoord;
+	vec3 normal;
+	u32 color;
+} DiskGfxVertexV59;
+
+// V59 collision vertex: position only, no checkStamp (12 bytes)
+typedef struct
+{
+	vec3 xyz;
+} DiskCollisionVertexV59;
+
+// V59 collision leaf: combined AABB tree + partition (16 bytes)
+// Replaces separate DiskCollisionAabbTree + DiskCollisionPartition
+typedef struct
+{
+	u16 materialIndex;
+	u16 flags;
+	u16 vertexCount;
+	u16 triIndexCount;
+	u32 firstVertex;
+	u32 firstTriIndex;
+} DiskCollisionLeafV59;
+
+#pragma pack(pop)

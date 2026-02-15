@@ -8,6 +8,7 @@
 #include <math.h>
 #include "type.h"
 #include "lump.h"
+#include "bsp_format.h"
 #include "entity_parser.h"
 #include <growable-buf/buf.h>
 
@@ -30,30 +31,39 @@ typedef struct
 	bool exclude_patches;
 } ProgramOptions;
 
+typedef enum { MAP_FMT_COD2, MAP_FMT_COD1, MAP_FMT_Q3 } MapFormat;
+
 LumpData lumpdata[LUMP_MAX];
 
 s64 filelen;
+u32 bsp_version;
+const BspFormat *bsp_fmt;
 
 Entity *entities;
 
 void info(dheader_t *hdr, int type, int *count)
 {
 	lump_t *l = &hdr->lumps[type];
+	size_t elem_size = bsp_fmt->lump_sizes[type];
 	char amount[256] = { 0 };
 	if(count)
 	{
 		snprintf(amount, sizeof(amount), "%6d", *count);
 	} else
 	{
-		if(lumpsizes[type] == 0)
+		if(elem_size == 0)
 			snprintf(amount, sizeof(amount), "     ?");
-		else if(lumpsizes[type] == 1)
+		else if(elem_size == 1)
 		{
 			snprintf(amount, sizeof(amount), "      ");
 		}
-		else if(lumpsizes[type] > 1)
+		else if(elem_size > 1 && l->filelen % elem_size == 0)
 		{
-			snprintf(amount, sizeof(amount), "%6d", l->filelen / lumpsizes[type]);
+			snprintf(amount, sizeof(amount), "%6zu", l->filelen / elem_size);
+		}
+		else if(elem_size > 1)
+		{
+			snprintf(amount, sizeof(amount), "     ?");
 		}
 	}
 	printf("%s %-19s %6d B\t%2d KB %5.1f%%\n",
@@ -107,7 +117,7 @@ void planes_from_aabb(vec3 mins, vec3 maxs, DiskPlane planes[6])
 	planes[5].dist = maxs[2];
 }
 
-static void write_plane(FILE *fp, const char *material, vec3 n, float dist, vec3 origin)
+static void write_plane(FILE *fp, const char *material, vec3 n, float dist, vec3 origin, MapFormat fmt)
 {
 	vec3 tangent, bitangent;
 	vec3 up = { 0, 0, 1.f };
@@ -131,19 +141,26 @@ static void write_plane(FILE *fp, const char *material, vec3 n, float dist, vec3
 	vec3_scale(t, bitangent, 100.f);
 	vec3_add(c, a, t);
 
-	fprintf(fp,
-			" ( %f %f %f ) ( %f %f %f ) ( %f %f %f ) %s 128 128 0 0 0 0 lightmap_gray 16384 16384 0 "
-			"0 0 0\n",
-			c[0] + origin[0],
-			c[1] + origin[1],
-			c[2] + origin[2],
-			b[0] + origin[0],
-			b[1] + origin[1],
-			b[2] + origin[2],
-			a[0] + origin[0],
-			a[1] + origin[1],
-			a[2] + origin[2],
-			material ? material : "caulk");
+	const char *mat = material ? material : "caulk";
+
+	fprintf(fp, " ( %f %f %f ) ( %f %f %f ) ( %f %f %f ) %s ",
+			c[0] + origin[0], c[1] + origin[1], c[2] + origin[2],
+			b[0] + origin[0], b[1] + origin[1], b[2] + origin[2],
+			a[0] + origin[0], a[1] + origin[1], a[2] + origin[2],
+			mat);
+
+	switch(fmt)
+	{
+		case MAP_FMT_COD2:
+			fprintf(fp, "128 128 0 0 0 0 lightmap_gray 16384 16384 0 0 0 0\n");
+			break;
+		case MAP_FMT_COD1:
+			fprintf(fp, "0 0 0 1 1 0 0 0 0\n");
+			break;
+		case MAP_FMT_Q3:
+			fprintf(fp, "0 0 0 1 1 0 0 0\n");
+			break;
+	}
 }
 
 const char *entity_key_by_value(Entity *ent, const char *key)
@@ -200,7 +217,95 @@ static bool vec3_fuzzy_zero(float *v)
 	return fabs(v[0]) < e && fabs(v[1]) < e && fabs(v[2]) < e;
 }
 
-static void write_patches(FILE *fp)
+// Write two rows (one triangle) of patch vertices
+static void write_patch_vertices(FILE *fp, MapFormat fmt, float *v1, float *v2, float *v3)
+{
+	float mid_ab[3] = { (v1[0]+v2[0])/2, (v1[1]+v2[1])/2, (v1[2]+v2[2])/2 };
+	float mid_ca[3] = { (v3[0]+v1[0])/2, (v3[1]+v1[1])/2, (v3[2]+v1[2])/2 };
+	switch(fmt)
+	{
+		case MAP_FMT_COD2:
+			fprintf(fp, "   (\n");
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v1[0], v1[1], v1[2]);
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v2[0], v2[1], v2[2]);
+			fprintf(fp, "   )\n");
+			fprintf(fp, "   (\n");
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v3[0], v3[1], v3[2]);
+			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v1[0], v1[1], v1[2]);
+			fprintf(fp, "   )\n");
+			break;
+		case MAP_FMT_COD1:
+			// 3 columns: left, midpoint, right (keeps patch flat)
+			fprintf(fp, "    ( ( %f %f %f 0 0 1 1 1 1 0 ) ( %f %f %f 0 0 1 1 1 1 0 ) ( %f %f %f 0 0 1 1 1 1 0 ) )\n",
+				v1[0], v1[1], v1[2], mid_ab[0], mid_ab[1], mid_ab[2], v2[0], v2[1], v2[2]);
+			fprintf(fp, "    ( ( %f %f %f 0 0 1 1 1 1 0 ) ( %f %f %f 0 0 1 1 1 1 0 ) ( %f %f %f 0 0 1 1 1 1 0 ) )\n",
+				v3[0], v3[1], v3[2], mid_ca[0], mid_ca[1], mid_ca[2], v1[0], v1[1], v1[2]);
+			break;
+		case MAP_FMT_Q3:
+			// 3 columns: left, midpoint, right (keeps patch flat)
+			fprintf(fp, "    ( ( %f %f %f 0 0 ) ( %f %f %f 0 0 ) ( %f %f %f 0 0 ) )\n",
+				v1[0], v1[1], v1[2], mid_ab[0], mid_ab[1], mid_ab[2], v2[0], v2[1], v2[2]);
+			fprintf(fp, "    ( ( %f %f %f 0 0 ) ( %f %f %f 0 0 ) ( %f %f %f 0 0 ) )\n",
+				v3[0], v3[1], v3[2], mid_ca[0], mid_ca[1], mid_ca[2], v1[0], v1[1], v1[2]);
+			break;
+	}
+}
+
+// Write a duplicate of the last row to make row count odd (patchDef2 requires odd dimensions)
+static void write_patch_pad_row(FILE *fp, MapFormat fmt, float *v3, float *v1)
+{
+	float mid_ca[3] = { (v3[0]+v1[0])/2, (v3[1]+v1[1])/2, (v3[2]+v1[2])/2 };
+	switch(fmt)
+	{
+		case MAP_FMT_COD1:
+			fprintf(fp, "    ( ( %f %f %f 0 0 1 1 1 1 0 ) ( %f %f %f 0 0 1 1 1 1 0 ) ( %f %f %f 0 0 1 1 1 1 0 ) )\n",
+				v3[0], v3[1], v3[2], mid_ca[0], mid_ca[1], mid_ca[2], v1[0], v1[1], v1[2]);
+			break;
+		case MAP_FMT_Q3:
+			fprintf(fp, "    ( ( %f %f %f 0 0 ) ( %f %f %f 0 0 ) ( %f %f %f 0 0 ) )\n",
+				v3[0], v3[1], v3[2], mid_ca[0], mid_ca[1], mid_ca[2], v1[0], v1[1], v1[2]);
+			break;
+		default:
+			break;
+	}
+}
+
+static void write_patch_header(FILE *fp, MapFormat fmt, const char *material, size_t tri_count)
+{
+	// patchDef2 requires odd dimensions >= 3.
+	// Each triangle is 2 rows x 3 cols. Total rows = tri_count*2, pad +1 to make odd.
+	size_t rows = tri_count * 2 + 1;
+	switch(fmt)
+	{
+		case MAP_FMT_COD2:
+			fprintf(fp, "  {\n");
+			fprintf(fp, "   mesh\n");
+			fprintf(fp, "   {\n");
+			fprintf(fp, "   %s\n", material);
+			fprintf(fp, "   lightmap_gray\n");
+			fprintf(fp, "   %zu 2 16 8\n", tri_count * 2);
+			break;
+		case MAP_FMT_COD1:
+		case MAP_FMT_Q3:
+			fprintf(fp, "  {\n");
+			fprintf(fp, "   patchDef2\n");
+			fprintf(fp, "   {\n");
+			fprintf(fp, "   %s\n", material);
+			fprintf(fp, "   ( %zu 3 0 0 0 )\n", rows);
+			fprintf(fp, "   (\n");
+			break;
+	}
+}
+
+static void write_patch_footer(FILE *fp, MapFormat fmt)
+{
+	if(fmt == MAP_FMT_COD1 || fmt == MAP_FMT_Q3)
+		fprintf(fp, "   )\n");
+	fprintf(fp, "   }\n");
+	fprintf(fp, "  }\n");
+}
+
+static void write_patches(FILE *fp, MapFormat fmt)
 {
 	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
 	DiskCollisionVertex *vertices = lumpdata[LUMP_COLLISIONVERTS].data;
@@ -257,8 +362,6 @@ static void write_patches(FILE *fp)
 			}
 		}
 	}
-	
-	// TODO: better way of converting triangles into patches
 
 	for(size_t i = 0; i < buf_size(patches); ++i)
 	{
@@ -266,32 +369,113 @@ static void write_patches(FILE *fp)
 		if(buf_size(patch->triangles) == 0)
 			continue;
 
-		fprintf(fp, "  {\n");
-		fprintf(fp, "   mesh\n");
-		fprintf(fp, "   {\n");
-		fprintf(fp, "   %s\n", materials[patch->materialIndex].material);
-		// TODO: write contentFlags and contentFlags info
-		fprintf(fp, "   lightmap_gray\n");
-		fprintf(fp, "   %d 2 16 8\n", buf_size(patch->triangles) * 2);
+		write_patch_header(fp, fmt, materials[patch->materialIndex].material, buf_size(patch->triangles));
 
 		for(size_t j = 0; j < buf_size(patch->triangles); ++j)
 		{
 			Triangle *tri = &patch->triangles[j];
-			DiskCollisionVertex *v1 = &vertices[tri->vertex[0]];
-			DiskCollisionVertex *v2 = &vertices[tri->vertex[1]];
-			DiskCollisionVertex *v3 = &vertices[tri->vertex[2]];
-			fprintf(fp, "   (\n");
-			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v1->xyz[0], v1->xyz[1], v1->xyz[2]);
-			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v2->xyz[0], v2->xyz[1], v2->xyz[2]);
-			fprintf(fp, "   )\n");
-			fprintf(fp, "   (\n");
-			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v3->xyz[0], v3->xyz[1], v3->xyz[2]);
-			fprintf(fp, "	v %f %f %f t -1024 1024 -4 4\n", v1->xyz[0], v1->xyz[1], v1->xyz[2]);
-			fprintf(fp,"   )\n");
+			write_patch_vertices(fp, fmt,
+				vertices[tri->vertex[0]].xyz,
+				vertices[tri->vertex[1]].xyz,
+				vertices[tri->vertex[2]].xyz);
 		}
-		fprintf(fp, "   }\n");
-		fprintf(fp, "  }\n");
+		// Pad row to make row count odd for patchDef2
+		if(fmt != MAP_FMT_COD2)
+		{
+			Triangle *last = &patch->triangles[buf_size(patch->triangles) - 1];
+			write_patch_pad_row(fp, fmt,
+				vertices[last->vertex[2]].xyz,
+				vertices[last->vertex[0]].xyz);
+		}
+		write_patch_footer(fp, fmt);
+	}
+}
 
+static void write_patches_v59(FILE *fp, MapFormat fmt)
+{
+	dmaterial_t *materials = (dmaterial_t*)lumpdata[LUMP_MATERIALS].data;
+	DiskCollisionLeafV59 *leaves = lumpdata[LUMP_COLLISIONAABBS].data;
+	DiskCollisionVertexV59 *verts = lumpdata[LUMP_COLLISIONVERTS].data;
+	u16 *tri_indices = lumpdata[LUMP_COLLISIONTRIS].data;
+
+	if(!leaves || !verts || !tri_indices)
+		return;
+
+	Patch *patches = NULL;
+	Patch *patch = NULL;
+
+	for(size_t i = 0; i < lumpdata[LUMP_COLLISIONAABBS].count; ++i)
+	{
+		DiskCollisionLeafV59 *leaf = &leaves[i];
+		if(leaf->triIndexCount == 0)
+			continue;
+
+		bool created_new_patch = false;
+		for(size_t j = 0; j < leaf->triIndexCount; j += 3)
+		{
+			u16 *tri = &tri_indices[leaf->firstTriIndex + j];
+			s32 gv0 = leaf->firstVertex + tri[0];
+			s32 gv1 = leaf->firstVertex + tri[1];
+			s32 gv2 = leaf->firstVertex + tri[2];
+
+			if(vec3_fuzzy_zero(verts[gv0].xyz)
+			   || vec3_fuzzy_zero(verts[gv1].xyz)
+			   || vec3_fuzzy_zero(verts[gv2].xyz))
+			{
+				continue;
+			}
+
+			Triangle triangle;
+			triangle.vertex[0] = gv0;
+			triangle.vertex[1] = gv1;
+			triangle.vertex[2] = gv2;
+
+			if(patch && buf_size(patch->triangles) >= 7)
+			{
+				buf_push(patches, ((Patch) { .triangles = NULL, .materialIndex = leaf->materialIndex }));
+				patch = &patches[buf_size(patches) - 1];
+				created_new_patch = true;
+			}
+			qsort(triangle.vertex, 3, sizeof(int), triangle_vertex_compare);
+
+			if(!patches_has_triangle(patches, triangle.vertex))
+			{
+				if(!created_new_patch)
+				{
+					buf_push(patches, ((Patch) { .triangles = NULL, .materialIndex = leaf->materialIndex }));
+					patch = &patches[buf_size(patches) - 1];
+					created_new_patch = true;
+				}
+				buf_push(patch->triangles, triangle);
+			}
+		}
+	}
+
+	for(size_t i = 0; i < buf_size(patches); ++i)
+	{
+		Patch *patch = &patches[i];
+		if(buf_size(patch->triangles) == 0)
+			continue;
+
+		write_patch_header(fp, fmt, materials[patch->materialIndex].material, buf_size(patch->triangles));
+
+		for(size_t j = 0; j < buf_size(patch->triangles); ++j)
+		{
+			Triangle *tri = &patch->triangles[j];
+			write_patch_vertices(fp, fmt,
+				verts[tri->vertex[0]].xyz,
+				verts[tri->vertex[1]].xyz,
+				verts[tri->vertex[2]].xyz);
+		}
+		// Pad row to make row count odd for patchDef2
+		if(fmt != MAP_FMT_COD2)
+		{
+			Triangle *last = &patch->triangles[buf_size(patch->triangles) - 1];
+			write_patch_pad_row(fp, fmt,
+				verts[last->vertex[2]].xyz,
+				verts[last->vertex[0]].xyz);
+		}
+		write_patch_footer(fp, fmt);
 	}
 }
 
@@ -314,7 +498,7 @@ static bool vec3_fuzzy_eq(float *a, float *b)
 	return true;
 }
 
-static void write_portals(FILE *fp)
+static void write_portals(FILE *fp, MapFormat fmt)
 {
 	DiskGfxPortal *portals = lumpdata[LUMP_PORTALS].data;
 	DiskGfxPortalVertex *vertices = lumpdata[LUMP_PORTALVERTS].data;
@@ -364,10 +548,10 @@ static void write_portals(FILE *fp)
 		triangle_normal(portal_normal, vertices[portal->firstPortalVertex].xyz, vertices[portal->firstPortalVertex + 1].xyz, vertices[portal->firstPortalVertex + 2].xyz);
 		float portal_distance = vec3_mul_inner(portal_normal, vertices[portal->firstPortalVertex].xyz);
 
-		write_plane(fp, "portal", portal_normal, portal_distance, (vec3) { 0.f, 0.f, 0.f });
+		write_plane(fp, "portal", portal_normal, portal_distance, (vec3) { 0.f, 0.f, 0.f }, fmt);
 		for(int k = 0; k < 3; ++k)
 			portal_normal[k] = -portal_normal[k];
-		write_plane(fp, "portal_nodraw", portal_normal, -portal_distance + 8.f, (vec3) { 0.f, 0.f, 0.f });
+		write_plane(fp, "portal_nodraw", portal_normal, -portal_distance + 8.f, (vec3) { 0.f, 0.f, 0.f }, fmt);
 		for(size_t i = 0; i < portal->portalVertexCount; ++i)
 		{
 			DiskGfxPortalVertex *a = &vertices[portal->firstPortalVertex + i];
@@ -383,7 +567,7 @@ static void write_portals(FILE *fp)
 			float d = vec3_mul_inner(n, a->xyz);
 			for(int k = 0; k < 3; ++k)
 				n[k] = -n[k];
-			write_plane(fp, "portal_nodraw", n, -d, (vec3) { 0.f, 0.f, 0.f });
+			write_plane(fp, "portal_nodraw", n, -d, (vec3) { 0.f, 0.f, 0.f }, fmt);
 		}
 		fprintf(fp, "}\n");
 	}
@@ -663,30 +847,27 @@ bool polygonize_brush(MapBrush *brush, Polygon **polygons_out)
 	return true;
 }
 
-static void write_brushes(FILE *fp, dmodel_t *model, vec3 origin)
+static void write_brushes(FILE *fp, dmodel_t *model, vec3 origin, MapFormat fmt)
 {
 	for(size_t i = 0; i < model->numBrushes; ++i)
-			{
-		fprintf(fp, "{\n");
+	{
 		MapBrush *brush = &mapbrushes[model->firstBrush + i];
-		// for(size_t j = 0; j < buf_size(brush->planes); ++j)
-		// {
-		// 	MapPlane *plane = &brush->planes[j];
-		// 	write_plane(fp, plane->material, plane->normal, plane->distance);
-		// }
 		Polygon *polys = NULL;
 		polygonize_brush(brush, &polys);
+		if(buf_size(polys) == 0)
+			continue;
+		fprintf(fp, "{\n");
 		for(size_t j = 0; j < buf_size(polys); ++j)
 		{
 			Polygon *poly = &polys[j];
 			MapPlane *plane = poly->plane;
-			write_plane(fp, plane->material, plane->normal, plane->distance, origin);
-			}
-		fprintf(fp, "}\n");	
+			write_plane(fp, plane->material, plane->normal, plane->distance, origin, fmt);
+		}
+		fprintf(fp, "}\n");
 	}
 }
 
-void export_to_map(ProgramOptions *opts, const char *path)
+void export_to_map(ProgramOptions *opts, const char *path, MapFormat fmt)
 {
 	FILE *mapfile = NULL;
 	mapfile = fopen(path, "w");
@@ -695,9 +876,11 @@ void export_to_map(ProgramOptions *opts, const char *path)
 		printf("Failed to open '%s'\n", path);
 		return;
 	}
-	printf("Exporting to '%s'\n", path);
+	static const char *fmt_names[] = { "CoD2 (iwmap)", "CoD1", "Quake 3" };
+	printf("Exporting to '%s' (format: %s)\n", path, fmt_names[fmt]);
 	Entity *worldspawn = &entities[0];
-	fprintf(mapfile, "iwmap 4\n");
+	if(fmt == MAP_FMT_COD2)
+		fprintf(mapfile, "iwmap 4\n");
 	fprintf(mapfile, "// entity 0\n{\n");
 	for(size_t i = 0; i < buf_size(worldspawn->keyvalues); ++i)
 	{
@@ -706,18 +889,21 @@ void export_to_map(ProgramOptions *opts, const char *path)
 	}
 	dmodel_t *models = lumpdata[LUMP_MODELS].data;
 
-	write_brushes(mapfile, &models[0], (vec3) { 0.f, 0.f, 0.f });
+	write_brushes(mapfile, &models[0], (vec3) { 0.f, 0.f, 0.f }, fmt);
 
 	if(!opts->exclude_patches)
 	{
-		write_patches(mapfile);
+		if(bsp_version == IBSP_VERSION_COD1)
+			write_patches_v59(mapfile, fmt);
+		else
+			write_patches(mapfile, fmt);
 	}
 	fprintf(mapfile, "}\n");
 	for(size_t i = 1; i < buf_size(entities); ++i)
 	{
 		Entity *e = &entities[i];
 		const char *classname = entity_key_by_value(e, "classname");
-		fprintf(mapfile, "// entity %d\n{\n", i);
+		fprintf(mapfile, "// entity %zu\n{\n", i);
 
 		bool has_brushes = !strcmp(classname, "script_brushmodel") || strstr(classname, "trigger_");
 		for(size_t j = 0; j < buf_size(e->keyvalues); ++j)
@@ -741,7 +927,7 @@ void export_to_map(ProgramOptions *opts, const char *path)
 			}
 			int modelidx = 0;
 			sscanf(modelstr, "*%d", &modelidx);
-			write_brushes(mapfile, &models[modelidx], origin);
+			write_brushes(mapfile, &models[modelidx], origin, fmt);
 		}
 		fprintf(mapfile, "}\n");
 	}
@@ -752,7 +938,7 @@ void print_info(dheader_t *hdr, const char *path)
 {
 	printf("bsp.c v0.1 (c) 2024\n");
 	printf("---------------------\n");
-	printf("%s: %d\n", path, filelen);
+	printf("%s: %lld (IBSP v%d, %s)\n", path, (long long)filelen, bsp_version, bsp_fmt->name);
 	
 	info(hdr, LUMP_MODELS, NULL);
 	info(hdr, LUMP_MATERIALS, NULL);
@@ -821,6 +1007,7 @@ static void print_usage()
 	printf("                        	Example: /path/to/your/bsp.d3dbsp will write to /path/to/your/bsp_exported.map\n");
 	printf("  -original_brush_portals 	By default portals are converted to brushes instead of using the portals that are in brushes.\n");
 	printf("  -exclude_patches 			Don't export patches.\n");
+	printf("  -format <fmt>      		MAP format: cod2, cod1, q3 (default: cod1 for V59, cod2 for V4).\n");
 	printf("\n");
 	printf("\n");
 	printf("  -export_path <path> 	Specify the path where the export should be saved. Requires an argument.\n");
@@ -955,34 +1142,52 @@ int main(int argc, char **argv)
 	s.seek(&s, 0, SEEK_SET);
 
 	dheader_t hdr = { 0 };
-	stream_read(s, hdr);
-	
+
+	// Read magic + version first, then lumps based on version
+	s.read(&s, hdr.ident, sizeof(hdr.ident), 1);
+	s.read(&s, &hdr.version, sizeof(hdr.version), 1);
+
 	if(memcmp(hdr.ident, "IBSP", 4))
 	{
-		fprintf(stderr, "Magic mismatch");
+		fprintf(stderr, "Magic mismatch\n");
 		exit(1);
 	}
-	if(hdr.version != 4)
+
+	bsp_fmt = bsp_format_for_version(hdr.version);
+	if(!bsp_fmt)
 	{
-		fprintf(stderr, "Version mismatch");
+		fprintf(stderr, "Unsupported IBSP version %d\n", hdr.version);
 		exit(1);
 	}
+	bsp_version = hdr.version;
+
+	s.read(&s, hdr.lumps, sizeof(lump_t), bsp_fmt->num_lumps);
+
+	if(bsp_fmt->remap_lumps)
+		bsp_fmt->remap_lumps(&hdr);
+
 	for(size_t i = 0; i < LUMP_MAX; ++i)
 	{
 		lump_t *l = &hdr.lumps[i];
-		if(l->filelen != 0 && lumpsizes[i] != 0)
+		size_t elem_size = bsp_fmt->lump_sizes[i];
+		if(l->filelen != 0 && elem_size > 0)
 		{
+			if(l->filelen % elem_size != 0)
+			{
+				fprintf(stderr, "Warning: Skipping lump %zu (%s): size %u not divisible by element size %zu\n",
+						i, lumpnames[i], l->filelen, elem_size);
+				continue;
+			}
 			LumpData *ld = &lumpdata[i];
-			assert(l->filelen % lumpsizes[i] == 0);
-			ld->count = l->filelen / lumpsizes[i];
-			ld->data = calloc(ld->count, lumpsizes[i]);
+			ld->count = l->filelen / elem_size;
+			ld->data = calloc(ld->count, elem_size);
 			if(!ld->data)
 			{
 				fprintf(stderr, "Error: Failed to allocate memory for lump %zu\n", i);
 				exit(1);
 			}
 			s.seek(&s, l->fileofs, SEEK_SET);
-			s.read(&s, ld->data, lumpsizes[i], ld->count);
+			s.read(&s, ld->data, elem_size, ld->count);
 		}
 	}
 	
@@ -996,6 +1201,27 @@ int main(int argc, char **argv)
 
 	if(opts.export_to_map)
 	{
+		// Resolve MAP format: explicit -format flag, or default based on BSP version
+		MapFormat map_fmt;
+		if(opts.format)
+		{
+			if(!strcmp(opts.format, "cod2"))
+				map_fmt = MAP_FMT_COD2;
+			else if(!strcmp(opts.format, "cod1"))
+				map_fmt = MAP_FMT_COD1;
+			else if(!strcmp(opts.format, "q3"))
+				map_fmt = MAP_FMT_Q3;
+			else
+			{
+				fprintf(stderr, "Unknown format '%s' (expected: cod2, cod1, q3)\n", opts.format);
+				return 1;
+			}
+		}
+		else
+		{
+			map_fmt = (bsp_version == IBSP_VERSION_COD1) ? MAP_FMT_COD1 : MAP_FMT_COD2;
+		}
+
 		char directory[256] = {0};
 		char basename[256] = {0};
 		char extension[256] = {0};
@@ -1021,9 +1247,9 @@ int main(int argc, char **argv)
 		}
 
 		if(opts.export_file)
-			export_to_map(&opts, opts.export_file);
+			export_to_map(&opts, opts.export_file, map_fmt);
 		else
-			export_to_map(&opts, output_file);
+			export_to_map(&opts, output_file, map_fmt);
 	}
 	return 0;
 }
