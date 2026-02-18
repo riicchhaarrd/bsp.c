@@ -117,6 +117,13 @@ void planes_from_aabb(vec3 mins, vec3 maxs, DiskPlane planes[6])
 	planes[5].dist = maxs[2];
 }
 
+static const char *strip_textures_prefix(const char *material)
+{
+	if(strncmp(material, "textures/", 9) == 0)
+		return material + 9;
+	return material;
+}
+
 static void write_plane(FILE *fp, const char *material, vec3 n, float dist, vec3 origin, MapFormat fmt)
 {
 	vec3 tangent, bitangent;
@@ -142,6 +149,8 @@ static void write_plane(FILE *fp, const char *material, vec3 n, float dist, vec3
 	vec3_add(c, a, t);
 
 	const char *mat = material ? material : "caulk";
+	if(fmt == MAP_FMT_COD1)
+		mat = strip_textures_prefix(mat);
 
 	fprintf(fp, " ( %f %f %f ) ( %f %f %f ) ( %f %f %f ) %s ",
 			c[0] + origin[0], c[1] + origin[1], c[2] + origin[2],
@@ -286,6 +295,13 @@ static void write_patch_header(FILE *fp, MapFormat fmt, const char *material, si
 			fprintf(fp, "   %zu 2 16 8\n", tri_count * 2);
 			break;
 		case MAP_FMT_COD1:
+			fprintf(fp, "  {\n");
+			fprintf(fp, "   patchDef5\n");
+			fprintf(fp, "   {\n");
+			fprintf(fp, "   %s\n", strip_textures_prefix(material));
+			fprintf(fp, "   ( %zu 3 0 0 0 )\n", rows);
+			fprintf(fp, "   (\n");
+			break;
 		case MAP_FMT_Q3:
 			fprintf(fp, "  {\n");
 			fprintf(fp, "   patchDef2\n");
